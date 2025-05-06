@@ -10,6 +10,7 @@ from pytorch_lightning.plugins import DDPPlugin
 from pytorch_lightning.loggers import WandbLogger
 from pytorch_lightning.callbacks.early_stopping import EarlyStopping
 from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor
+from callbacks.gradual_accum_scheduler import GradualAccumulationScheduler
 
 from tokenizers import ByteLevelBPETokenizer
 from tokenizers.processors import BertProcessing  
@@ -35,6 +36,9 @@ if __name__ == '__main__':
     parser.add_argument('--lr', default=4.5e-6, type=float, help='learning rate')
     parser.add_argument('--accumulate_grad_batches', default=1, type=float)
     parser.add_argument('--weight_decay', default=1e-6, type=float, help='weight decay')
+    
+    # added parameter, gradual accumulate goes from 1 to accumulate_grad_batches over this many epochs
+    parser.add_argument('--warmup_epochs', type=int, default=5, help='warmup epochs')
 
     parser.add_argument('--img_root_dir', default='path/to/mimic-cxr-jpg', type=str)
     parser.add_argument('--text_root_dir', default='path/to/mimic-cxr-database', type=str)
@@ -236,8 +240,14 @@ if __name__ == '__main__':
     mode='max'
     )
     
+    # declaring our custom callback
+    gradual_accum_callback = GradualAccumulationScheduler(
+        target_accumulation=args.accumulate_grad_batches,
+        warmup_epochs=args.warmup_epochs
+    )
+
     trainer_args = {
-        'callbacks': [checkpoint_callback, lr_callback],
+        'callbacks': [checkpoint_callback, lr_callback, gradual_accum_callback],
         'max_epochs': args.n_epochs,
         'gpus': args.n_gpus,
         'accelerator': 'ddp',
@@ -255,9 +265,10 @@ if __name__ == '__main__':
     args.wandb_name = NOW
     wandb_logger = WandbLogger(name=args.wandb_name, log_model=True, config=args, save_code=True)
 
+    # modified accumulate_grad_batches to 1, since it will be overridden by the callback
     trainer = pl.Trainer(**trainer_args, logger=wandb_logger, plugins=DDPPlugin(find_unused_parameters=True),
                          gradient_clip_val=args.gradient_clip_val, profiler="simple",
-                         accumulate_grad_batches=args.accumulate_grad_batches,
+                         accumulate_grad_batches=1,
                          replace_sampler_ddp=False)
 
     wandb_logger.watch(model)
